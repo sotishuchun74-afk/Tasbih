@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK from ZIP
 
 on:
   push:
@@ -11,39 +11,78 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: TasbihApp.zip ni ochish
-        run: |
-          unzip -o TasbihApp.zip -d extracted_app
-          PUBSPEC_DIR=$(dirname "$(find extracted_app -maxdepth 3 -name pubspec.yaml | head -n 1)")
-          echo "Topilgan loyiha papkasi: $PUBSPEC_DIR"
-          cp -r "$PUBSPEC_DIR"/. .
-
       - uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
+          flutter-version: '3.x'
 
-      - name: Android platform fayllarini yaratish
-        run: flutter create . --platforms=android --project-name tasbih_app
+      # 1. ZIP faylni ochish
+      - name: Unzip project files
+        run: unzip -o TasbihApp.zip -d extracted_app
 
-      - name: Android compileSdk versiyasini eng soʻnggisiga moslashtirish
+      # 2. Fayllarni ildiz katalogga ko'chirish
+      - name: Move files to root directory
         run: |
-          GRADLE_FILE="android/app/build.gradle.kts"
-          if [ ! -f "$GRADLE_FILE" ]; then
-            GRADLE_FILE="android/app/build.gradle"
+          if [ -f "extracted_app/pubspec.yaml" ]; then
+            cp -rn extracted_app/* .
+          else
+            cp -rn extracted_app/*/* .
           fi
-          sed -i -E 's/compileSdk(Version)?[[:space:]]*=?[[:space:]]*flutter\.compileSdkVersion/compileSdk = 36/' "$GRADLE_FILE"
-          sed -i -E 's/compileSdkVersion[[:space:]]+[0-9]+/compileSdkVersion 36/' "$GRADLE_FILE"
-          sed -i -E 's/compileSdk[[:space:]]*=[[:space:]]*[0-9]+/compileSdk = 36/' "$GRADLE_FILE"
-          grep -in "compileSdk" "$GRADLE_FILE"
 
-      - name: Kutubxonalarni oʻrnatish
+      # 3. Android platforma fayllarini yaratish
+      - name: Recreate missing android platform files
+        run: |
+          if [ ! -d "android" ]; then
+            flutter create . --platforms=android --org=com.example
+          fi
+
+      # 4. VIBRATE ruxsatnomasini AndroidManifest.xml ga qo'shish
+      - name: Add VIBRATE permission
+        run: |
+          MANIFEST_FILE="android/app/src/main/AndroidManifest.xml"
+          if [ -f "$MANIFEST_FILE" ]; then
+            if ! grep -q "android.permission.VIBRATE" "$MANIFEST_FILE"; then
+              sed -i '/<manifest/a \    <uses-permission android:name="android.permission.VIBRATE"/>' "$MANIFEST_FILE"
+            fi
+          fi
+
+      # 5. Gradle init skripti orqali compileSdk 34/36 ni majburlash (Vibration va boshqa kutubxonalar uchun)
+      - name: Force Android SDK compileSdkVersion 34 via Gradle script
+        run: |
+          mkdir -p ~/.gradle
+          cat << 'EOF' > ~/.gradle/init.gradle
+          allprojects {
+              afterEvaluate { project ->
+                  if (project.hasProperty('android')) {
+                      project.android {
+                          compileSdkVersion 34
+                          if (namespace == null) {
+                              namespace = project.group
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+      # 6. android/local.properties faylida SDK versiyasini 34 qilish
+      - name: Set Android SDK 34 in properties & build.gradle
+        run: |
+          echo "flutter.compileSdkVersion=34" >> android/local.properties
+          echo "flutter.targetSdkVersion=34" >> android/local.properties
+          sed -i 's/compileSdkVersion [0-9]*/compileSdkVersion 34/g' android/app/build.gradle || true
+
+      # 7. Kutubxonalarni o'rnatish
+      - name: Install dependencies
         run: flutter pub get
 
-      - name: APK yigʻish
+      # 8. APK yig'ish
+      - name: Build APK
         run: flutter build apk --release
 
-      - name: APK faylni yuklash
+      # 9. APK faylni saqlash (Artifact)
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tasbih-app-release
+          name: Tasbih-APK
           path: build/app/outputs/flutter-apk/app-release.apk
+          overwrite: true
